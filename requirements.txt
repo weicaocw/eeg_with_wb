@@ -1,0 +1,11 @@
+# Core dependencies
+numpy
+pandas
+networkx
+scipy
+
+# Config and logging
+configparser
+
+# Testing
+pytest
