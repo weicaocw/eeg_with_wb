@@ -4,33 +4,67 @@ import numpy as np
 import h5py
 import json
 import os
+import random # 新增
 
 class EEGSeizureDataset(Dataset):
-    def __init__(self, root_h5_dir, annotation_json_path, fs=250, seq_len=10, stride=1.0):
+    def __init__(self, root_h5_dir, annotation_json_path, fs=250, seq_len=10, stride=1.0, data_percentage=1.0):
         """
         Args:
             root_h5_dir (str): H5 数据根目录
             annotation_json_path (str): 标注 JSON 路径
             fs (int): 采样率
-            seq_len (int): 序列长度 (秒)。模型将一次性读取 seq_len 秒的数据作为一个样本。
-            stride (float): 滑动窗口步长 (秒)。
+            seq_len (int): 序列长度 (秒)
+            stride (float): 滑动窗口步长 (秒)
+            data_percentage (float): 数据采样比例 (0.0 - 1.0)。例如 0.1 代表只使用 10% 的数据。
         """
         self.root_h5_dir = root_h5_dir
         self.fs = fs
-        
-        # 核心变化：window_pts 现在代表整个序列的长度
         self.seq_len_sec = seq_len
         self.seq_pts = int(seq_len * fs) 
         self.stride_pts = int(stride * fs)
         
-        # 加载标注文件
+        # 1. 加载完整 JSON
         with open(annotation_json_path, 'r') as f:
-            self.raw_annotations = json.load(f)
+            full_annotations = json.load(f)
             
+        # 2. 实现分层采样逻辑 (Stratified Sampling)
+        if data_percentage < 1.0:
+            print(f"Dataset: 检测到采样比例 {data_percentage}，正在进行分层采样...")
+            
+            # 分组：有 Seizure vs 无 Seizure
+            # 依据: seizure_duration_sec > 0
+            seizure_files = [x for x in full_annotations if x.get('seizure_duration_sec', 0) > 0]
+            bckg_files = [x for x in full_annotations if x.get('seizure_duration_sec', 0) == 0]
+            
+            # 计算目标数量
+            n_seizure_target = int(len(seizure_files) * data_percentage)
+            n_bckg_target = int(len(bckg_files) * data_percentage)
+            
+            # 确保至少有 1 个 (如果原始数据非空)
+            if len(seizure_files) > 0 and n_seizure_target == 0: n_seizure_target = 1
+            if len(bckg_files) > 0 and n_bckg_target == 0: n_bckg_target = 1
+            
+            # 随机抽取 (固定种子以保证可复现性)
+            random.seed(42) 
+            selected_seizure = random.sample(seizure_files, n_seizure_target)
+            selected_bckg = random.sample(bckg_files, n_bckg_target)
+            
+            # 合并
+            self.raw_annotations = selected_seizure + selected_bckg
+            
+            print(f"Dataset: 采样完成。")
+            print(f"  - 原始: {len(full_annotations)} (Seizure: {len(seizure_files)}, Bckg: {len(bckg_files)})")
+            print(f"  - 采样: {len(self.raw_annotations)} (Seizure: {len(selected_seizure)}, Bckg: {len(selected_bckg)})")
+            
+        else:
+            # 全量数据
+            self.raw_annotations = full_annotations
+
         self.samples = [] 
         self._prepare_indices()
 
     def _prepare_indices(self):
+        # ... (这部分代码保持不变，它会遍历 self.raw_annotations) ...
         print(f"Dataset: 正在扫描文件并构建 {self.seq_len_sec}秒 的序列索引...")
         count = 0
         
@@ -87,6 +121,7 @@ class EEGSeizureDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
+        # ... (这部分代码保持不变) ...
         sample_info = self.samples[idx]
         original_path = sample_info['file_path']
         

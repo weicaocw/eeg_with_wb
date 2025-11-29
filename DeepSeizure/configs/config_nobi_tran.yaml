@@ -12,6 +12,8 @@ data:
   fs: 250
   tmp_dir: "/tmp" # 统一配置临时目录
 
+  data_percentage: 0.1  # 使用数据的百分比 (0-1 之间)
+
 features:
   n_fft: 128            
   mi_bins: 32           

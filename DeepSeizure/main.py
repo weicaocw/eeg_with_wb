@@ -120,14 +120,19 @@ def run_pipeline(config_path):
     writer = SummaryWriter(log_dir=log_dir)
     print(f"TensorBoard log dir: {log_dir}")
     
+    # 获取采样比例，默认为 1.0 (全量)
+    data_pct = cfg['data'].get('data_percentage', 1.0)
+    
     # 2. 准备数据
-    print("\n>>> Loading Training Data...")
+    print(f"\n>>> Loading Training Data (Percentage: {data_pct*100}%)...")
     train_full_ds = EEGSeizureDataset(
         root_h5_dir=cfg['data']['train_root_dir'],
         annotation_json_path=cfg['data']['train_annotation'],
         fs=cfg['data']['fs'],
         seq_len=cfg['train']['seq_len'],
-        stride=1.0
+        stride=1.0,
+        # 传入采样比例
+        data_percentage=data_pct 
     )
     
     # 划分 Train/Val
