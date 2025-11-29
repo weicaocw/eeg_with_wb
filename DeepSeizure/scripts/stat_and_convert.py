@@ -7,15 +7,13 @@ import mne
 import warnings
 
 # 配置路径
-ROOT_DIR_EVAL = '/home/students/wcao/tuh_eeg_seizure/edf/eval/'
+ROOT_DIR_EVAL = '/root/autodl-tmp/data/eval/'
 OUTPUT_FILE_EVAL = 'eval_segments.json'
 SAMPLING_RATE = 250.0
-ROOT_DIR_TRAIN = '/home/students/wcao/tuh_eeg_seizure/edf/train/'
+ROOT_DIR_TRAIN = '/root/autodl-tmp/data/train/'
 OUTPUT_FILE_TRAIN = 'train_segments.json'
-SOURCE_ROOT_EVAL = '/home/students/wcao/tuh_eeg_seizure/edf/eval/'
-TARGET_ROOT_EVAL = '/home/students/wcao/eeg_test_seizure_h5'
-SOURCE_ROOT_TRAIN = '/home/students/wcao/tuh_eeg_seizure/edf/train/'
-TARGET_ROOT_TRAIN = '/home/students/wcao/eeg_train_seizure_h5'
+TARGET_ROOT_EVAL = '/root/autodl-tmp/data/h5/eval/'
+TARGET_ROOT_TRAIN = '/root/autodl-tmp/data/h5/train/'
 
 # 目标采样率
 TARGET_SFREQ = 250.0
@@ -436,7 +434,7 @@ if __name__ == "__main__":
     dataset_eval = EEGDataset(OUTPUT_FILE_EVAL) 
     dataset_train = EEGDataset(OUTPUT_FILE_TRAIN)
     
-    convert_edf_to_h5(SOURCE_ROOT_EVAL, TARGET_ROOT_EVAL)
-    convert_edf_to_h5(SOURCE_ROOT_TRAIN, TARGET_ROOT_TRAIN)
+    convert_edf_to_h5(ROOT_DIR_EVAL, TARGET_ROOT_EVAL)
+    convert_edf_to_h5(ROOT_DIR_TRAIN, TARGET_ROOT_TRAIN)
     
     
