@@ -13,6 +13,29 @@ from src.dataset import EEGSeizureDataset
 from src.models.sequence import EEGSeizureNet
 from src.utils import load_config
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+
+class EarlyStopping:
+    def __init__(self, patience=5, delta=0):
+        self.patience = patience
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+
+    def __call__(self, val_metric):
+        score = val_metric
+        if self.best_score is None:
+            self.best_score = score
+        elif score <= self.best_score:
+            self.counter += 1
+            print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.counter = 0
+
 # ==========================================
 # 辅助函数
 # ==========================================
@@ -143,8 +166,14 @@ def run_pipeline(config_path):
     # mode='reduce-overhead' 适合小 Batch 极速推理
     # mode='max-autotune' 适合长时间训练，追求极致吞吐
     # 对于你的 Transformer/LSTM，这是免费的加速
-    print(">>> Compiling model with torch.compile...")
-    model = torch.compile(model, mode='default')
+    # print(">>> Compiling model with torch.compile...")
+    # model = torch.compile(model, mode='default')
+    
+    # 手动编译那些标准的深度学习层 (Linear, Conv, Transformer, LSTM)
+    print(">>> Compiling submodules (Encoder, Backbone, Classifier)...")
+    model.encoder = torch.compile(model.encoder)
+    model.backbone = torch.compile(model.backbone)
+    model.classifier = torch.compile(model.classifier)
     
     optimizer = optim.AdamW(model.parameters(), lr=float(cfg['train']['learning_rate']))
     criterion = nn.CrossEntropyLoss()
@@ -154,6 +183,9 @@ def run_pipeline(config_path):
     checkpoint_dir = "DeepSeizure/checkpoints"
     os.makedirs(checkpoint_dir, exist_ok=True)
     best_model_path = os.path.join(checkpoint_dir, f"best_model_{run_name}.pth")
+    
+    # 初始化早停，patience=5 表示允许 5 个 Epoch 不进步
+    early_stopping = EarlyStopping(patience=5)
     
     print(f"\n>>> ({cfg['train']['epochs']} epochs)...")
     for epoch in range(1, cfg['train']['epochs'] + 1):
@@ -176,6 +208,12 @@ def run_pipeline(config_path):
             best_val_f1 = val_metrics['f1']
             torch.save(model.state_dict(), best_model_path)
             print(f"  --> New Best F1! Model saved.")
+        
+        # --- 检查早停 ---
+        early_stopping(val_metrics['f1'])
+        if early_stopping.early_stop:
+            print("Early stopping triggered! Training stopped.")
+            break # 跳出循环，直接进入测试阶段
             
     # 5. 测试阶段
     print("\n" + "="*40)
