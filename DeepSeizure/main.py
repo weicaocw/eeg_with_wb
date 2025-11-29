@@ -104,8 +104,7 @@ def run_pipeline(config_path):
         annotation_json_path=cfg['data']['train_annotation'],
         fs=cfg['data']['fs'],
         seq_len=cfg['train']['seq_len'],
-        stride=1.0,
-        tmp_dir=cfg['data']['tmp_dir']
+        stride=1.0
     )
     
     # 划分 Train/Val
@@ -192,8 +191,7 @@ def run_pipeline(config_path):
         annotation_json_path=cfg['data']['test_annotation'],
         fs=cfg['data']['fs'],
         seq_len=cfg['train']['seq_len'],
-        stride=1.0,
-        tmp_dir=cfg['data']['tmp_dir']
+        stride=1.0
     )
     
     if len(test_ds) == 0:
