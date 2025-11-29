@@ -4,13 +4,14 @@ import numpy as np
 import h5py
 import json
 import os
-import shutil
-import uuid
 
 class EEGSeizureDataset(Dataset):
-    def __init__(self, root_h5_dir, annotation_json_path, fs=250, seq_len=10, stride=1.0, tmp_dir='/tmp'):
+    def __init__(self, root_h5_dir, annotation_json_path, fs=250, seq_len=10, stride=1.0):
         """
         Args:
+            root_h5_dir (str): H5 数据根目录
+            annotation_json_path (str): 标注 JSON 路径
+            fs (int): 采样率
             seq_len (int): 序列长度 (秒)。模型将一次性读取 seq_len 秒的数据作为一个样本。
             stride (float): 滑动窗口步长 (秒)。
         """
@@ -22,9 +23,7 @@ class EEGSeizureDataset(Dataset):
         self.seq_pts = int(seq_len * fs) 
         self.stride_pts = int(stride * fs)
         
-        self.tmp_dir = tmp_dir
-        if not os.path.exists(self.tmp_dir): os.makedirs(self.tmp_dir, exist_ok=True)
-        
+        # 加载标注文件
         with open(annotation_json_path, 'r') as f:
             self.raw_annotations = json.load(f)
             
@@ -58,16 +57,9 @@ class EEGSeizureDataset(Dataset):
                         n_points = f['eeg'].shape[1]
                 except: continue
             
-            # 4. 生成序列索引 (关键修正：只在文件内部滑动)
-            # 只有当剩余数据 >= seq_pts (比如10秒) 时，才生成样本
-            # 这样就绝对保证了同一个样本的数据来自同一个文件，且连续
+            # 4. 生成序列索引 (只在文件内部滑动)
             for start_idx in range(0, n_points - self.seq_pts + 1, self.stride_pts):
                 end_idx = start_idx + self.seq_pts
-                
-                # 确定该序列的标签
-                # 策略：如果序列的“最后一秒”在 seizure 区间内，或者序列中包含超过 50% 的 seizure，则标为 1
-                # 这里我们使用更适合实时检测的策略：只要序列中有 Seizure 出现，就标记为 1 (偏敏感)，
-                # 或者严格一点：序列最后时刻是 Seizure。
                 
                 # 简单实现：检查这个时间窗口与 Seizure 区间是否有交集
                 t_start = start_idx / self.fs
@@ -97,28 +89,21 @@ class EEGSeizureDataset(Dataset):
     def __getitem__(self, idx):
         sample_info = self.samples[idx]
         original_path = sample_info['file_path']
-        unique_suffix = str(uuid.uuid4())[:8]
-        tmp_name = f"{sample_info['file_name']}_{unique_suffix}.h5"
-        tmp_path = os.path.join(self.tmp_dir, tmp_name)
         
         try:
-            # Copy & Read
-            shutil.copyfile(original_path, tmp_path)
-            with h5py.File(tmp_path, 'r') as f:
-                # 一次性读取 10秒 数据 [17, 2500]
+            # 直接从原始路径读取数据
+            with h5py.File(original_path, 'r') as f:
+                # 一次性读取 seq_len 秒的数据 [Channels, Time]
                 data = f['eeg'][:, sample_info['start_idx'] : sample_info['end_idx']]
             
-            # Preprocessing
+            # Preprocessing: Z-Score Normalization
             mean = np.mean(data, axis=1, keepdims=True)
             std = np.std(data, axis=1, keepdims=True) + 1e-6
             data = (data - mean) / std
             
             # Reshape logic: [17, Seq_Len * fs] -> [Seq_Len, 17, fs]
             # 我们需要把连续的长波形，切成 1秒1秒 的块喂给 Feature Layer
-            # data shape: [17, 2500]
             n_channels = data.shape[0]
-            # view as [17, 10, 250] -> permute -> [10, 17, 250]
-            # 前提：self.seq_pts 必须是 fs 的整数倍 (我们代码里保证了)
             
             raw_tensor = torch.tensor(data, dtype=torch.float32)
             
@@ -132,11 +117,6 @@ class EEGSeizureDataset(Dataset):
             return seq_x, y
 
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error reading {original_path}: {e}")
             # 返回全0数据占位
             return torch.zeros((self.seq_len_sec, 17, self.fs)), torch.tensor(0)
-            
-        finally:
-            if os.path.exists(tmp_path):
-                try: os.remove(tmp_path)
-                except: pass

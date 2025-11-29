@@ -25,8 +25,12 @@ def train_one_epoch(model, loader, criterion, optimizer, device, epoch, writer):
         x, y = x.to(device), y.to(device)
         
         optimizer.zero_grad()
-        logits = model(x)
-        loss = criterion(logits, y)
+        # === 技巧 1: 混合精度 (BFloat16) ===
+        # RTX 30/40 系列专属福利，比 FP16 更稳，不用 Scaler
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            logits = model(x)
+            loss = criterion(logits, y)
+            
         loss.backward()
         optimizer.step()
         
@@ -109,11 +113,40 @@ def run_pipeline(config_path):
     val_size = len(train_full_ds) - train_size
     train_ds, val_ds = random_split(train_full_ds, [train_size, val_size])
     
-    train_loader = DataLoader(train_ds, batch_size=cfg['train']['batch_size'], shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_ds, batch_size=cfg['train']['batch_size'], shuffle=False, num_workers=2)
+# === 技巧 3: DataLoader 参数 ===
+    # num_workers: 设置为 CPU 核心数的一半左右。你由 16核，设为 8 或 10 比较合适。
+    # pin_memory: 必须为 True！这会把数据锁在内存中，加速 CPU 到 GPU 的传输。
+    # persistent_workers: True。避免每个 Epoch 结束后销毁进程再重建，节省开销。
+    
+    train_loader = DataLoader(
+        train_ds, 
+        batch_size=cfg['train']['batch_size'], 
+        shuffle=True, 
+        num_workers=8,        # 利用多核 CPU
+        pin_memory=True,      # 加速 CPU->GPU 拷贝
+        persistent_workers=True, # 保持进程存活
+        prefetch_factor=4     # 让每个 worker 提前多读几个 batch
+    )
+    
+    val_loader = DataLoader(
+        val_ds, 
+        batch_size=cfg['train']['batch_size'], 
+        shuffle=False, 
+        num_workers=4,        # 验证集可以少一点
+        pin_memory=True,
+        persistent_workers=True
+    )
     
     # 3. 初始化模型
     model = EEGSeizureNet(cfg).to(device)
+    
+    # === 技巧 2: 编译模型 ===
+    # mode='reduce-overhead' 适合小 Batch 极速推理
+    # mode='max-autotune' 适合长时间训练，追求极致吞吐
+    # 对于你的 Transformer/LSTM，这是免费的加速
+    print(">>> Compiling model with torch.compile...")
+    model = torch.compile(model, mode='default')
+    
     optimizer = optim.AdamW(model.parameters(), lr=float(cfg['train']['learning_rate']))
     criterion = nn.CrossEntropyLoss()
     
