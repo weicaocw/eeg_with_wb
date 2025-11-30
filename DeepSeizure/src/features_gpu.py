@@ -78,10 +78,34 @@ class EEGFeatureLayer(nn.Module):
             features['cross_corr'] = torch.fft.irfft(Pxy, n=self.n_fft)
         return features
 
+    def _init_bispectrum_indices(self):
+            n_freqs = self.n_fft // 2 + 1
+            f1 = torch.arange(n_freqs)
+            f2 = torch.arange(n_freqs)
+            
+            # [F, F]
+            sum_idx = f1.unsqueeze(-1) + f2.unsqueeze(0)
+            
+            # Mask 1: Nyquist 限制 (f1 + f2 < n_freqs)
+            mask_nyquist = sum_idx < n_freqs
+            
+            # Mask 2: 对称性去重 (f1 <= f2)
+            # 如果你想保留全矩阵(为了CNN)，这个可以不做；
+            # 如果你想去重，只保留上三角，可以加上这个。
+            # 通常为了 CNN 输入，我们保留对称的矩阵，或者只保留上三角并置零下三角。
+            # 这里为了最大化信息展示，我们保留全矩阵，只 mask 掉 nyquist 溢出部分。
+            
+            final_mask = mask_nyquist
+            
+            # 将溢出的索引设为 0，防止 gather 越界 (配合 mask 使用，结果会被置 0)
+            safe_sum_idx = sum_idx * final_mask.long()
+            
+            self.register_buffer('freq_sum_idx', safe_sum_idx)
+            self.register_buffer('freq_mask', final_mask.float()) 
+
     def compute_cross_bispectrum(self, X):
         """
         同时计算 Raw Bispectrum 和 Threenorm Bicoherence
-        为了节省计算量，在同一个循环里完成
         """
         B_size, _, n_freqs = X.shape
         idx_i, idx_j = self.pair_indices[0], self.pair_indices[1]
@@ -89,11 +113,14 @@ class EEGFeatureLayer(nn.Module):
         list_raw = []
         list_norm = []
         
-        # 预计算 |X|^3 用于归一化 (如果需要)
+        # 预计算 |X|^3 用于归一化
         if self.include_norm:
             X_abs_cube = X.abs().pow(3)
         
         chunk_size = self.n_pairs if self.bispec_batch <= 0 else self.bispec_batch
+        
+        # 确保 mask 的维度正确用于广播 [1, 1, F, F]
+        mask_broadcast = self.freq_mask.unsqueeze(0).unsqueeze(0)
         
         for k in range(0, self.n_pairs, chunk_size):
             end_k = min(k + chunk_size, self.n_pairs)
@@ -105,15 +132,17 @@ class EEGFeatureLayer(nn.Module):
             X_j = X[:, sub_j, :]
             
             # --- 分子 (Raw Bispectrum) ---
-            # Term 1 & 2
+            # Term 1 & 2: Outer Product -> [B, chunk, F, F]
             term12 = X_i.unsqueeze(-1) * X_j.unsqueeze(-2)
-            # Term 3
+            
+            # Term 3: Gather X_j(f1+f2)
             X_j_conj = torch.conj(X_j)
             flat_indices = self.freq_sum_idx.view(-1)
             term3 = X_j_conj[:, :, flat_indices].view(B_size, end_k-k, n_freqs, n_freqs)
             
-            # Raw Result (Magnitude)
-            raw_chunk = (term12 * term3).abs() * self.freq_mask.unsqueeze(0).unsqueeze(0)
+            # Raw Result: 计算并应用 Mask
+            # 关键点：在这里直接乘 Mask，确保无效区域绝对为 0
+            raw_chunk = (term12 * term3).abs() * mask_broadcast
             
             if self.include_raw:
                 list_raw.append(raw_chunk)
@@ -121,17 +150,28 @@ class EEGFeatureLayer(nn.Module):
             # --- 分母 (Normalization) ---
             if self.include_norm:
                 # Denom formula: (|Xi(f1)|^3 * |Xj(f2)|^3 * |Xj(f1+f2)|^3)^(1/3)
+                
                 cube_i_f1 = X_abs_cube[:, sub_i, :].unsqueeze(-1)
                 cube_j_f2 = X_abs_cube[:, sub_j, :].unsqueeze(-2)
+                
+                # Gather cube sum
                 cube_j_sum = X_abs_cube[:, sub_j, :]
                 cube_j_sum_flat = cube_j_sum[:, :, flat_indices].view(B_size, end_k-k, n_freqs, n_freqs)
                 
-                denom_chunk = (cube_i_f1 * cube_j_f2 * cube_j_sum_flat).pow(1/3)
+                denom_prod = cube_i_f1 * cube_j_f2 * cube_j_sum_flat
+                denominator = denom_prod.pow(1/3)
                 
                 # Norm Result = Raw / Denom
-                norm_chunk = raw_chunk / (denom_chunk + 1e-8)
-                # Mask 已经在 raw_chunk 里乘过了，但为了保险可以再乘一次或者不乘
-                # norm_chunk = norm_chunk * self.freq_mask... (Optional)
+                # 关键修复：只在 Mask 有效的区域进行除法，避免 0/0 产生 NaN
+                # 方法：分母加 epsilon，并且结果再次乘 Mask
+                
+                norm_chunk = raw_chunk / (denominator + 1e-8)
+                
+                # 再次应用 Mask 确保干净 (特别是 NaN 可能会污染)
+                # 使用 torch.nan_to_num 处理可能的漏网之鱼
+                norm_chunk = torch.nan_to_num(norm_chunk, nan=0.0, posinf=0.0, neginf=0.0)
+                norm_chunk = norm_chunk * mask_broadcast
+                
                 list_norm.append(norm_chunk)
 
         # 拼接结果
