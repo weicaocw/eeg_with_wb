@@ -5,20 +5,20 @@ import h5py
 import json
 import os
 import random
-from tqdm import tqdm # 引入 tqdm 显示预加载进度
+from tqdm import tqdm
 
 class EEGSeizureDataset(Dataset):
     def __init__(self, root_h5_dir, annotation_json_path, fs=250, seq_len=10, stride=1.0, data_percentage=1.0, cache_to_ram=False):
         """
         Args:
-            cache_to_ram (bool): 是否将所有数据预加载到内存。
+            cache_to_ram (bool): 是否将所有用到的 H5 源文件加载到内存。
         """
         self.root_h5_dir = root_h5_dir
         self.fs = fs
         self.seq_len_sec = seq_len
         self.seq_pts = int(seq_len * fs) 
         self.stride_pts = int(stride * fs)
-        self.cache_to_ram = cache_to_ram # 保存标志位
+        self.cache_to_ram = cache_to_ram
         
         # 1. 加载完整 JSON
         with open(annotation_json_path, 'r') as f:
@@ -40,12 +40,12 @@ class EEGSeizureDataset(Dataset):
 
         # 3. 构建索引
         self.samples = [] 
-_prepare_indices()
+        self._prepare_indices()
         
-        # 4. === 核心修改: 预加载到 RAM ===
-        self.cached_data = [] # 用于存储 Tensor
+        # 4. === 核心修改: 预加载源文件到 RAM ===
+        self.file_cache = {} # Key: file_path, Value: torch.Tensor (Whole File)
         if self.cache_to_ram:
-            self._preload_data()
+            self._preload_files()
 
     def _prepare_indices(self):
         print(f"Dataset: 正在扫描文件索引...")
@@ -87,60 +87,71 @@ _prepare_indices()
                 })
         print(f"Dataset: 索引构建完成！共 {len(self.samples)} 个样本。")
 
-    def _preload_data(self):
-        """将所有数据读取处理后存入 self.cached_data 列表"""
-        print(f"\n>>> [RAM CACHE] 开始预加载 {len(self.samples)} 个样本到内存 (这可能需要几分钟)...")
+    def _preload_files(self):
+        """
+        优化版缓存：只缓存 unique 的源文件，而不是缓存切片。
+        这消除了滑动窗口带来的内存冗余，且无需 psutil 监控。
+        """
+        # 1. 找出所有需要用到的唯一文件路径
+        unique_files = set(sample['file_path'] for sample in self.samples)
+        print(f"\n>>> [RAM CACHE] 开始加载 {len(unique_files)} 个源文件到内存 (无冗余)...")
         
-        # 使用 tqdm 显示进度条
-        for idx in tqdm(range(len(self.samples)), desc="Caching to RAM"):
-            # 调用内部读取函数，获取处理好的 Tensor
-            x, y = self._load_one_item(idx)
-            self.cached_data.append((x, y))
-            
-        print(f">>> [RAM CACHE] 预加载完成！后续训练将不再读取磁盘。\n")
+        for file_path in tqdm(unique_files, desc="Caching Files"):
+            try:
+                # 读取整个文件
+                with h5py.File(file_path, 'r') as f:
+                    # [Channels, All_Time] -> 存入内存
+                    # 使用 float32 节省空间
+                    whole_data = torch.tensor(f['eeg'][:], dtype=torch.float32)
+                    self.file_cache[file_path] = whole_data
+            except Exception as e:
+                print(f"Failed to cache {file_path}: {e}")
 
-    def _load_one_item(self, idx):
-        """内部函数：读取并预处理单个样本 (从磁盘)"""
+        print(f">>> [RAM CACHE] 缓存完成。已缓存 {len(self.file_cache)} 个文件。")
+
+    def __getitem__(self, idx):
         sample_info = self.samples[idx]
-        original_path = sample_info['file_path']
+        file_path = sample_info['file_path']
+        start = sample_info['start_idx']
+        end = sample_info['end_idx']
         
-        try:
-            with h5py.File(original_path, 'r') as f:
-                data = f['eeg'][:, sample_info['start_idx'] : sample_info['end_idx']]
-            
-            # Preprocessing
-            mean = np.mean(data, axis=1, keepdims=True)
-            std = np.std(data, axis=1, keepdims=True) + 1e-6
-            data = (data - mean) / std
-            
-            # Reshape: [17, T] -> [T, 17, 250] (FeatureLayer 期望的输入)
-            # 注意: 这里的 Reshape 逻辑需要和你之前的匹配
-            # 你的 FeatureLayer 期望输入是 [Batch, Seq_Len, Channels, Time_per_sec]
-            # 这里我们把 Seq_Len 秒的数据切成 [Seq_Len, 17, 250]
-            
-            raw_tensor = torch.tensor(data, dtype=torch.float32)
-            n_channels = raw_tensor.shape[0]
-            
-            # [17, Seq_Len * 250] -> [17, Seq_Len, 250]
-            reshaped = raw_tensor.view(n_channels, self.seq_len_sec, self.fs)
-            # [17, Seq_Len, 250] -> [Seq_Len, 17, 250]
-            seq_x = reshaped.permute(1, 0, 2)
-            
-            y = torch.tensor(sample_info['label'], dtype=torch.long)
-            
-            return seq_x, y
+        # === 数据读取逻辑 ===
+        if self.cache_to_ram and file_path in self.file_cache:
+            # [路径 A] 极速模式：从内存中的大 Tensor 直接切片
+            raw_data = self.file_cache[file_path][:, start:end]
+        else:
+            # [路径 B] 普通模式：从磁盘读取
+            try:
+                with h5py.File(file_path, 'r') as f:
+                    data_numpy = f['eeg'][:, start:end]
+                    raw_data = torch.tensor(data_numpy, dtype=torch.float32)
+            except Exception as e:
+                # 容错返回
+                return torch.zeros((17, self.seq_pts // self.fs, self.fs)).permute(1, 0, 2), torch.tensor(0)
 
-        except Exception as e:
-            print(f"Error reading {original_path}: {e}")
-            return torch.zeros((self.seq_len_sec, 17, self.fs)), torch.tensor(0)
+        # === 实时预处理 (On-the-fly Preprocessing) ===
+        # 注意：这里我们对取出来的这一小段做处理
+        
+        # 1. Z-Score Normalization
+        mean = raw_data.mean(dim=1, keepdim=True)
+        std = raw_data.std(dim=1, keepdim=True) + 1e-6
+        norm_data = (raw_data - mean) / std
+        
+        # 2. Reshape to [Seq_Len, Channels, Freq]
+        n_channels = norm_data.shape[0]
+        
+        # 检查数据长度是否足够
+        if norm_data.shape[1] != self.seq_pts:
+             pad_len = self.seq_pts - norm_data.shape[1]
+             norm_data = torch.nn.functional.pad(norm_data, (0, pad_len))
+
+        reshaped = norm_data.view(n_channels, self.seq_len_sec, self.fs)
+        # [17, 10, 250] -> [10, 17, 250]
+        seq_x = reshaped.permute(1, 0, 2)
+        
+        y = torch.tensor(sample_info['label'], dtype=torch.long)
+        
+        return seq_x, y
 
     def __len__(self):
         return len(self.samples)
-
-    def __getitem__(self, idx):
-        # 如果开启了缓存，直接从列表取值 (极速)
-        if self.cache_to_ram:
-            return self.cached_data[idx]
-        
-        # 否则从磁盘读取 (慢)
-        return self._load_one_item(idx)

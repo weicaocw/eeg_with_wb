@@ -10,18 +10,18 @@ import datetime
 # 如果在其他地方，请修改下面的路径前缀
 CONFIG_FILES = [
     # standard ablation configs
-    # "config_bi_lstm.yaml",
-    "config_bi_tran.yaml",
+    "config_bi_lstm.yaml",
     "config_nobi_lstm.yaml",
+    "config_bi_tran.yaml",
     "config_nobi_tran.yaml",
-
-    # raw signal input only (no normalization) configs
-    "config_bi_raw_lstm.yaml",
-    "config_bi_raw_tran.yaml",    
     
     # no reduction ablation configs    
     "config_bi_nored_lstm.yaml",
     "config_bi_nored_tran.yaml",
+    
+    # raw signal input only (no normalization) configs
+    "config_bi_raw_lstm.yaml",
+    "config_bi_raw_tran.yaml",    
     
     # raw only + no reduction configs
     "config_bi_raw_nored_lstm.yaml",
