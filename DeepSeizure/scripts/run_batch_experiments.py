@@ -10,7 +10,7 @@ import datetime
 # 如果在其他地方，请修改下面的路径前缀
 CONFIG_FILES = [
     # standard ablation configs
-    "config_bi_lstm.yaml",
+    # "config_bi_lstm.yaml",
     "config_bi_tran.yaml",
     "config_nobi_lstm.yaml",
     "config_nobi_tran.yaml",

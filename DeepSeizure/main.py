@@ -123,6 +123,9 @@ def run_pipeline(config_path):
     # 获取采样比例，默认为 1.0 (全量)
     data_pct = cfg['data'].get('data_percentage', 1.0)
     
+    # 读取 Config 中的 cache_to_ram 参数，默认为 False
+    cache_to_ram = cfg['data'].get('cache_to_ram', False)
+    
     # 2. 准备数据
     print(f"\n>>> Loading Training Data (Percentage: {data_pct*100}%)...")
     train_full_ds = EEGSeizureDataset(
@@ -131,8 +134,8 @@ def run_pipeline(config_path):
         fs=cfg['data']['fs'],
         seq_len=cfg['train']['seq_len'],
         stride=1.0,
-        # 传入采样比例
-        data_percentage=data_pct 
+        data_percentage=data_pct,
+        cache_to_ram=cache_to_ram  # <--- 传入参数
     )
     
     # 划分 Train/Val
@@ -228,13 +231,18 @@ def run_pipeline(config_path):
     # 加载最佳模型
     model.load_state_dict(torch.load(best_model_path))
     
-    # 加载测试集
+    print("\n>>> Loading Test Data...")
     test_ds = EEGSeizureDataset(
         root_h5_dir=cfg['data']['test_root_dir'],
         annotation_json_path=cfg['data']['test_annotation'],
         fs=cfg['data']['fs'],
         seq_len=cfg['train']['seq_len'],
-        stride=1.0
+        stride=1.0,
+        data_percentage=1.0, # 测试集通常不降采样
+        # 测试集也可以 cache_to_ram，如果内存够的话。
+        # 这里为了稳妥，测试集可以不 cache，或者设为 True 也行。
+        # 建议设为 False 以防训练集占满内存导致 OOM。
+        cache_to_ram=cache_to_ram 
     )
     
     if len(test_ds) == 0:

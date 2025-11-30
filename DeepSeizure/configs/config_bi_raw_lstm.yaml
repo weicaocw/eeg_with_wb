@@ -14,6 +14,8 @@ data:
 
   data_percentage: 0.1  # 使用数据的百分比 (0-1 之间)
 
+  cache_to_ram: true
+
 features:
   n_fft: 128            
   mi_bins: 32           
