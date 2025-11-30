@@ -1,0 +1,46 @@
+data:
+  # 训练数据根目录
+  train_root_dir: "/root/autodl-tmp/data/h5/train/" 
+  # 训练集标注
+  train_annotation: "/root/autodl-tmp/code/eeg_with_wb/DeepSeizure/data/raw/train_segments.json"
+  
+  # 测试数据根目录 (可以是同一个，也可以不同)
+  test_root_dir: "/root/autodl-tmp/data/h5/eval/"
+  # 测试集标注
+  test_annotation: "/root/autodl-tmp/code/eeg_with_wb/DeepSeizure/data/raw/eval_segments.json"
+  
+  fs: 250
+  tmp_dir: "/tmp" # 统一配置临时目录
+
+  data_percentage: 0.1  # 使用数据的百分比 (0-1 之间)
+
+  cache_to_ram: true
+
+features:
+  n_fft: 128            
+  mi_bins: 32           
+  use_coherence: true   
+  use_mi: true          
+  bispectrum:
+    enabled: false
+    include_raw: true
+    include_normalized: true
+    reduce_to_bands: true   
+    batch_size: 64 
+  frequency_bands:
+    Delta: [0.5, 4]
+    Theta: [4, 8]
+    Alpha: [8, 13]
+    Beta: [13, 30]
+    Gamma: [30, 100]
+
+train:
+  model_type: "transformer" # lstm, transformer, mamba
+  batch_size: 128
+  epochs: 20
+  learning_rate: 0.0005
+  seq_len: 10
+  
+  # --- 新增：监控配置 ---
+  log_dir: "/root/autodl-tmp/code/eeg_with_wb/DeepSeizure/runs" # TensorBoard 日志存放位置
+  
