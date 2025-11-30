@@ -184,7 +184,13 @@ def run_pipeline(config_path):
     model.classifier = torch.compile(model.classifier)
     
     optimizer = optim.AdamW(model.parameters(), lr=float(cfg['train']['learning_rate']))
-    criterion = nn.CrossEntropyLoss()
+    
+    # 1. 计算权重 (粗略估计：背景/癫痫 ≈ 9)
+    #TODO(wei) 更好的方法是在 Dataset 里统计精确比例，这里先手动给一个强权重
+    pos_weight = torch.tensor([1.0, 10.0]).to(device) # 给 Class 1 (Seizure) 10倍权重
+
+    # 2. 修改 Loss
+    criterion = nn.CrossEntropyLoss(weight=pos_weight)
     
     # 4. 训练循环
     best_val_f1 = 0.0
