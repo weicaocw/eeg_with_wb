@@ -8,6 +8,7 @@ from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, precision_score, recall_score
 from torch.utils.tensorboard import SummaryWriter
 import argparse  # 1. 引入 argparse
+import json
 
 from src.dataset import EEGSeizureDataset
 from src.models.sequence import EEGSeizureNet
@@ -15,6 +16,10 @@ from src.utils import load_config
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+# === 在这里加入这行代码 ===
+# 启用 TF32 加速 (RTX 30/40系列显卡的神器)
+# 选项: 'highest' (默认, 最慢), 'high' (推荐, 使用TF32), 'medium' (最快, 精度略低)
+torch.set_float32_matmul_precision('high')
 
 class EarlyStopping:
     def __init__(self, patience=5, delta=0):
@@ -139,33 +144,62 @@ def run_pipeline(config_path):
     )
     
     # 划分 Train/Val
-    train_size = int(0.9 * len(train_full_ds))
-    val_size = len(train_full_ds) - train_size
-    train_ds, val_ds = random_split(train_full_ds, [train_size, val_size])
+    # === 修正：严格按文件划分 Train/Val，防止泄漏 ===
+    # 1. 加载所有训练文件的元数据
+    with open(cfg['data']['train_annotation'], 'r') as f:
+        all_meta = json.load(f)
     
-# === 技巧 3: DataLoader 参数 ===
-    # num_workers: 设置为 CPU 核心数的一半左右。你由 16核，设为 8 或 10 比较合适。
-    # pin_memory: 必须为 True！这会把数据锁在内存中，加速 CPU 到 GPU 的传输。
-    # persistent_workers: True。避免每个 Epoch 结束后销毁进程再重建，节省开销。
+    # 2. 按病人ID (patient_id) 进行切分，例如 80% 病人训练，20% 病人验证
+    # 提取所有唯一的病人 ID
+    patient_ids = list(set([item['patient'] for item in all_meta]))
+    # 排序并随机打乱 (设置随机种子保证每次一样)
+    patient_ids.sort()
+    rng = np.random.RandomState(42)
+    rng.shuffle(patient_ids)
     
-    train_loader = DataLoader(
-        train_ds, 
-        batch_size=cfg['train']['batch_size'], 
-        shuffle=True, 
-        num_workers=8,        # 利用多核 CPU
-        pin_memory=True,      # 加速 CPU->GPU 拷贝
-        persistent_workers=True, # 保持进程存活
-        prefetch_factor=4     # 让每个 worker 提前多读几个 batch
+    split_idx = int(len(patient_ids) * 0.9)
+    train_patients = set(patient_ids[:split_idx])
+    val_patients = set(patient_ids[split_idx:])
+    
+    print(f"Total Patients: {len(patient_ids)} | Train: {len(train_patients)} | Val: {len(val_patients)}")
+    
+    # 3. 分别保存临时的 json 文件
+    train_meta = [x for x in all_meta if x['patient'] in train_patients]
+    val_meta = [x for x in all_meta if x['patient'] in val_patients]
+    
+    # 这里的路径你可以放到 tmp 或者 data/processed
+    train_json_path = os.path.join(cfg['data']['tmp_dir'], 'temp_train_split.json')
+    val_json_path = os.path.join(cfg['data']['tmp_dir'], 'temp_val_split.json')
+    
+    with open(train_json_path, 'w') as f: json.dump(train_meta, f)
+    with open(val_json_path, 'w') as f: json.dump(val_meta, f)
+    
+    # 4. 分别实例化 Dataset
+    # 训练集：可以应用 data_percentage 进行下采样
+    train_ds = EEGSeizureDataset(
+        root_h5_dir=cfg['data']['train_root_dir'],
+        annotation_json_path=train_json_path, # <--- 用新的临时json
+        fs=cfg['data']['fs'],
+        seq_len=cfg['train']['seq_len'],
+        stride=1.0,
+        data_percentage=cfg['data'].get('data_percentage', 1.0),
+        cache_to_ram=cfg['data'].get('cache_to_ram', False)
     )
     
-    val_loader = DataLoader(
-        val_ds, 
-        batch_size=cfg['train']['batch_size'], 
-        shuffle=False, 
-        num_workers=4,        # 验证集可以少一点
-        pin_memory=True,
-        persistent_workers=True
+    # 验证集：通常不采样，且必须使用独立的病人
+    val_ds = EEGSeizureDataset(
+        root_h5_dir=cfg['data']['train_root_dir'], # 依然是 train 目录下的文件
+        annotation_json_path=val_json_path, # <--- 用新的临时json
+        fs=cfg['data']['fs'],
+        seq_len=cfg['train']['seq_len'],
+        stride=1.0, # 验证集也可以 stride=1，或者更大
+        data_percentage=cfg['data'].get('data_percentage', 1.0),
+        cache_to_ram=False # 验证集通常不需要 cache，防止内存爆
     )
+    
+    train_loader = DataLoader(train_ds, batch_size=cfg['train']['batch_size'], shuffle=True, num_workers=4)
+    # 验证集 shuffle=False
+    val_loader = DataLoader(val_ds, batch_size=cfg['train']['batch_size'], shuffle=False, num_workers=4)
     
     # 3. 初始化模型
     model = EEGSeizureNet(cfg).to(device)
