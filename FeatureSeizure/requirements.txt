@@ -1,0 +1,8 @@
+# 示例依赖，请根据项目需要进行修改
+numpy
+scipy
+pandas
+mne
+scikit-learn
+xgboost
+pyyaml

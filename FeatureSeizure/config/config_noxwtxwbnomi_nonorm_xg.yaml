@@ -1,0 +1,75 @@
+project_name: "FeatureSeizure"
+
+paths:
+  data_dir: "/tmp/wei_tmp/chb01/"
+  summary_file: "/tmp/wei_tmp/chb01/chb01-summary.txt"
+  output_dir: "./output/"
+
+logging:
+  level: "INFO"
+  file: "logs/feature_seizure.log"
+  format: "%(asctime)s [%(levelname)-8s] [%(name)s] - %(message)s"
+  datefmt: "%Y-%m-%d %H:%M:%S"
+
+signal_processing:
+  fs: 256
+  window_sec: 4
+  step_sec: 1  # 正样本滑窗步长
+  normalize: false  # 是否对原始信号进行标准化
+  
+data_balancing:
+  target_balance_ratio: 2.0  # 负样本是正样本的多少倍
+  negative_sample_limit: 300 # 每个文件最大负样本数（防止内存爆炸）
+
+# 通道对配置 (可随意增减)
+channel_pairs:
+  # 1. 左右半球对称配对 (Inter-hemispheric Homologous)
+  # 目的：检测大脑两侧的不对称性。癫痫发作往往始于单侧，导致对称性破坏。
+  - ["FP1-F3", "FP2-F4"]   # 左前额 vs 右前额
+  - ["F3-C3", "F4-C4"]     # 左额中 vs 右额中
+  - ["C3-P3", "C4-P4"]     # 左中央顶 vs 右中央顶
+  - ["P3-O1", "P4-O2"]     # 左后枕 vs 右后枕
+  - ["T7-P7", "T8-P8"]     # 左颞后 vs 右颞后 (注意：这是你列表中的 Channel 3 vs 15)
+
+  # 2. 纵向长程连接 (Intra-hemispheric Long-range)
+  # 目的：检测同一半球内，前部（额叶）与后部（枕叶/颞叶）的信息流。
+  # 这是检测发作传播（Propagation）的关键路径。
+  - ["FP1-F7", "P7-O1"]    # 左半球：最前 vs 最后 (Sylvian Fissure 上方通路)
+  - ["FP2-F8", "P8-O2"]    # 右半球：最前 vs 最后
+  - ["FP1-F3", "P3-O1"]    # 左半球：内侧通路 前 vs 后
+  - ["FP2-F4", "P4-O2"]    # 右半球：内侧通路 前 vs 后
+
+  # 3. 颞叶重点监测 (Temporal Lobe Specific)
+  # 目的：颞叶癫痫（TLE）是最常见的成人癫痫，关注颞区与基底区域的连接。
+  - ["F7-T7", "T7-P7"]     # 左颞区：前颞 vs 后颞 (注意：共用T7电极，见下文警告)
+  - ["F8-T8", "T8-P8"]     # 右颞区：前颞 vs 后颞 (注意：共用T8电极)
+  - ["FT9-FT10", "T7-FT9"] # 基底横向连接
+
+# 特征配置：在这里开关具体的特征
+features:
+  # - "xwt_stats"    # 交叉小波统计特征
+  # - "xwb_stats"    # 交叉小波双谱统计特征
+  - "cross_corr"   # 时域互相关
+  - "mutual_info"  # 互信息
+
+# 模型配置
+model:
+  type: "xgboost" # 可选: xgboost / random_forest / svm
+  params:
+    xgboost:
+      n_estimators: 100
+      max_depth: 6
+      learning_rate: 0.1
+      subsample: 0.8
+      eval_metric: "logloss"
+      base_score: 0.5
+    random_forest:
+      n_estimators: 300
+      max_depth: 8
+      class_weight: "balanced"
+      random_state: 42
+    svm:
+      kernel: "rbf"
+      C: 1.0
+      gamma: "scale"
+      class_weight: "balanced"
